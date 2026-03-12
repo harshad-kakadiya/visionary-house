@@ -180,6 +180,9 @@ export interface StrapiService {
 export interface RoomSpaceAttr {
   title?: string | null;
   slug?: string | null;
+  capacity?: number | null;
+  rate?: number | null;
+  pricingType?: string | null;
   image?: StrapiMedia | { data: StrapiMedia | null } | null;
   sortOrder?: number | null;
 }
@@ -191,6 +194,9 @@ export interface StrapiRoomSpace {
   /** Strapi v5 flat response: fields at top level */
   title?: string | null;
   slug?: string | null;
+  capacity?: number | null;
+  rate?: number | null;
+  pricingType?: string | null;
   image?: StrapiMedia | { data: StrapiMedia | null } | null;
   sortOrder?: number | null;
 }
@@ -473,7 +479,6 @@ export interface BookingSettingsAttr {
 // ---- Configs (single type) ----
 export interface ConfigsAttr {
   maintenance_mode?: boolean | null;
-  hourlyPrice?: number | string | null;
   adminEmail?: string | null;
 }
 

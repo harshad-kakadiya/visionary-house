@@ -124,6 +124,41 @@ export function getTotalDurationMinutes(
 }
 
 /**
+ * Count how many 12‑hour shifts a booking touches.
+ * Shifts are:
+ * - Shift 1: 00:00 → 12:00
+ * - Shift 2: 12:00 → 24:00
+ * Any overlap with a shift counts as 1 full shift.
+ */
+export function countShiftsInRange(
+  startDate: string,
+  startTime: string,
+  endDate: string | undefined,
+  endTime: string
+): number {
+  const start = new Date(`${startDate}T${startTime}:00`);
+  const end = endDate
+    ? new Date(`${endDate}T${endTime}:00`)
+    : new Date(`${startDate}T${endTime}:00`);
+
+  if (!(end.getTime() > start.getTime())) {
+    return 0;
+  }
+
+  // Anchor at midnight of the start date, then slice time into 12h buckets
+  const anchor = new Date(start);
+  anchor.setHours(0, 0, 0, 0);
+  const shiftMs = 12 * 60 * 60 * 1000;
+
+  const startIndex = Math.floor((start.getTime() - anchor.getTime()) / shiftMs);
+  // Subtract 1ms so bookings ending exactly on a boundary
+  // (e.g. 10:00–12:00) are counted in the correct shift only.
+  const endIndex = Math.floor(((end.getTime() - 1) - anchor.getTime()) / shiftMs);
+
+  return Math.max(0, endIndex - startIndex + 1);
+}
+
+/**
  * Check if date is blocked
  */
 export function isDateBlocked(
@@ -226,14 +261,20 @@ export function checkAvailability(
 
 /**
  * Calculate total price for booking with add-ons.
- * If hourlyPriceFromConfigs is provided (from Strapi Configs), it is used as the base hourly rate for all service types; otherwise falls back to built-in base prices.
+ * Pricing is driven by Room/Space:
+ * - If roomRate is provided:
+ *   - pricingType "Per Hour": price = roomRate * hours
+ *   - pricingType "Per Shift": price = roomRate * numberOfShifts
+ * - If roomRate is missing, falls back to built-in base prices per serviceType (legacy behaviour).
  */
 export function calculateBookingPrice(
   serviceType: string,
   duration: number,
   addOnIds: string[],
   addOnsData: any[],
-  hourlyPriceFromConfigs?: number | null
+  roomRate?: number | null,
+  roomPricingType?: string | null,
+  shiftCount?: number
 ): number {
   const basePrices: Record<string, number> = {
     'event-space': 200,
@@ -241,12 +282,22 @@ export function calculateBookingPrice(
     'virtual-office': 50,
     'media-studio': 150,
   };
-  const basePrice =
-    hourlyPriceFromConfigs != null && Number.isFinite(Number(hourlyPriceFromConfigs))
-      ? Number(hourlyPriceFromConfigs)
-      : basePrices[serviceType] ?? 0;
   const hours = duration / 60;
-  const serviceCost = basePrice * hours;
+  let serviceCost = 0;
+
+  if (roomRate != null && Number.isFinite(Number(roomRate))) {
+    const r = Number(roomRate);
+    const type = (roomPricingType || '').toLowerCase();
+    if (type.includes('shift')) {
+      const effectiveShiftCount = shiftCount && shiftCount > 0 ? shiftCount : 1;
+      serviceCost = r * effectiveShiftCount;
+    } else {
+      serviceCost = r * hours;
+    }
+  } else {
+    const basePrice = basePrices[serviceType] ?? 0;
+    serviceCost = basePrice * hours;
+  }
 
   const addOnsCost = addOnIds.reduce((total, addOnId) => {
     const addOn = addOnsData.find((a) => a.id === addOnId);

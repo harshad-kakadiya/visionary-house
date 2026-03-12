@@ -342,6 +342,8 @@ export function mapStrapiAddOns(items: StrapiAddOn[]): BookingAddOn[] {
 
 export interface ServiceLayoutWithRoom extends ServiceLayout {
   roomSpace?: string;
+  rate?: number;
+  pricingType?: string;
 }
 
 export interface MappedEventType {
@@ -379,14 +381,31 @@ export function mapStrapiServiceLayouts(items: StrapiServiceLayout[]): Record<st
     const a: any = getAttr(item);
     const roomSpaceRel = (a as { roomSpace?: { data?: StrapiRoomSpace | null } | null }).roomSpace;
     const roomSpaceData = roomSpaceRel?.data ?? (roomSpaceRel as StrapiRoomSpace | null) ?? null;
-    const slug = roomSpaceData?.attributes?.slug ?? (roomSpaceData as { slug?: string } | null)?.slug ?? null;
+    const slug =
+      roomSpaceData?.attributes?.slug ??
+      (roomSpaceData as { slug?: string } | null)?.slug ??
+      null;
     const key = roomSpaceSlugToServiceKey(slug ?? undefined);
+    const roomCapacity =
+      roomSpaceData?.attributes?.capacity ??
+      (roomSpaceData as { capacity?: number } | null)?.capacity ??
+      null;
+    const roomRate =
+      roomSpaceData?.attributes?.rate ??
+      (roomSpaceData as { rate?: number } | null)?.rate ??
+      null;
+    const roomPricingType =
+      roomSpaceData?.attributes?.pricingType ??
+      (roomSpaceData as { pricingType?: string } | null)?.pricingType ??
+      null;
 
     if (!byService[key]) byService[key] = [];
     byService[key].push({
       id: String(item.id ?? item.documentId ?? ""),
       name: a?.name ?? "",
-      capacity: Number(a?.capacity) || 0,
+      capacity: roomCapacity != null ? Number(roomCapacity) || 0 : Number(a?.capacity) || 0,
+      rate: roomRate != null ? Number(roomRate) || 0 : undefined,
+      pricingType: typeof roomPricingType === "string" ? roomPricingType : undefined,
       description: a?.description ?? "",
       image: getDirectImageUrl(a?.image as StrapiMedia | null),
       roomSpace: slug ?? undefined,

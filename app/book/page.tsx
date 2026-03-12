@@ -75,7 +75,8 @@ import {
   formatTime,
   timeToMinutes,
   generateBookingReference,
-  getTotalDurationMinutes
+  getTotalDurationMinutes,
+  countShiftsInRange,
 } from "@/lib/utils/booking-utils";
 import { validateInternationalPhone, normalizeInternationalPhone } from "@/lib/utils/phone";
 import type { BookingFormData, BookingAddOn, ServiceLayout } from "@/lib/types/booking";
@@ -614,23 +615,60 @@ export default function Book() {
 
   // Calculate price whenever relevant fields change (supports multi-day via getTotalDurationMinutes)
   useEffect(() => {
+    // Price is only meaningful once a specific layout (and therefore room/space) has been chosen.
+    if (!formData.layoutId) {
+      setTotalPrice(0);
+      return;
+    }
     if (formData.serviceType && formData.date && formData.startTime && formData.endTime) {
       const totalMinutes = isMultiDay && formData.endDate
         ? getTotalDurationMinutes(formData.date, formData.startTime, formData.endDate, formData.endTime)
         : timeToMinutes(formData.endTime) - timeToMinutes(formData.startTime);
       if (totalMinutes > 0) {
-        const hourlyFromConfigs = configsData?.hourlyPrice != null ? Number(configsData.hourlyPrice) : undefined;
+        // Find pricing for the currently selected room/space (from layouts → roomSpace relation).
+        let roomRate: number | undefined;
+        let roomPricingType: string | undefined;
+        let shiftCount: number | undefined;
+        if (formData.roomSpace) {
+          for (const key of Object.keys(serviceLayoutsMap)) {
+            const layouts = serviceLayoutsMap[key] || [];
+            const match = layouts.find((l: any) => (l as any).roomSpace === formData.roomSpace);
+            if (match) {
+              const m: any = match;
+              roomRate = typeof m.rate === 'number' ? m.rate : Number(m.rate ?? 0) || undefined;
+              roomPricingType = typeof m.pricingType === 'string' ? m.pricingType : undefined;
+              if (
+                roomPricingType &&
+                roomPricingType.toLowerCase().includes("shift") &&
+                formData.date &&
+                formData.startTime &&
+                formData.endTime
+              ) {
+                const endDateForShift = isMultiDay ? formData.endDate : undefined;
+                shiftCount = countShiftsInRange(
+                  formData.date,
+                  formData.startTime,
+                  endDateForShift,
+                  formData.endTime
+                );
+              }
+              break;
+            }
+          }
+        }
         const price = calculateBookingPrice(
           formData.serviceType,
           totalMinutes,
           formData.addOns,
           addOnsList,
-          hourlyFromConfigs
+          roomRate,
+          roomPricingType,
+          shiftCount
         );
         setTotalPrice(price);
       }
     }
-  }, [formData.serviceType, formData.date, formData.endDate, formData.startTime, formData.endTime, formData.addOns, isMultiDay, addOnsList, configsData?.hourlyPrice]);
+  }, [formData.serviceType, formData.date, formData.endDate, formData.startTime, formData.endTime, formData.addOns, formData.layoutId, isMultiDay, addOnsList, formData.roomSpace, serviceLayoutsMap]);
 
   // Validate time slot: only require end after start (no min/max duration restriction)
   useEffect(() => {
@@ -840,6 +878,45 @@ export default function Book() {
       setSelectedLayoutIds([]);
     }
   }, [formData.layoutId]);
+
+  // Re-validate attendees vs selected layout capacity when layout or attendees change (e.g. user selects a new layout with sufficient capacity)
+  useEffect(() => {
+    const raw = formData.attendees?.trim();
+    if (!raw) {
+      setAttendeesError(null);
+      return;
+    }
+    const num = Number(raw);
+    if (Number.isNaN(num)) {
+      setAttendeesError(null);
+      return;
+    }
+    const layoutId = formData.layoutId;
+    if (!layoutId) {
+      setAttendeesError(null);
+      return;
+    }
+    const allLayouts = ([] as (ServiceLayout & { roomSpace?: string })[]).concat(
+      ...Object.values(serviceLayoutsMap)
+    );
+    const selectedLayout = allLayouts.find((l) => l.id === layoutId);
+    if (!selectedLayout) {
+      setAttendeesError(null);
+      return;
+    }
+    const totalCapacity = selectedLayout.capacity;
+    if (totalCapacity === undefined) {
+      setAttendeesError(null);
+      return;
+    }
+    if (num > totalCapacity) {
+      setAttendeesError(
+        `Expected attendees cannot exceed the capacity of the selected layout (${totalCapacity} guests).`
+      );
+    } else {
+      setAttendeesError(null);
+    }
+  }, [formData.layoutId, formData.attendees, serviceLayoutsMap]);
 
   // Minutes restricted to 00, 15, 30, 45 only
   const MINUTES_QUARTER = [0, 15, 30, 45];
@@ -1488,7 +1565,41 @@ export default function Book() {
   const duration = totalDurationMinutes / 60;
   const addOnsSubtotal = selectedAddOns.reduce((s, a) => s + a.price, 0);
   const serviceCost = totalPrice - addOnsSubtotal;
-  const serviceRatePerHour = duration > 0 ? serviceCost / duration : 0;
+  // Derive display unit (/hour vs /shift) and effective unit rate for the summary
+  let pricingUnit: "hour" | "shift" = "hour";
+  let effectiveUnitCount = duration > 0 ? duration : 0;
+
+  // Detect if current selection uses per-shift pricing
+  let isPerShiftPricing = false;
+  if (formData.roomSpace) {
+    for (const key of Object.keys(serviceLayoutsMap)) {
+      const layouts = serviceLayoutsMap[key] || [];
+      const match = layouts.find((l: any) => (l as any).roomSpace === formData.roomSpace);
+      if (match && typeof (match as any).pricingType === "string") {
+        if ((match as any).pricingType.toLowerCase().includes("shift")) {
+          isPerShiftPricing = true;
+        }
+        break;
+      }
+    }
+  }
+
+  if (isPerShiftPricing && formData.date && formData.startTime && formData.endTime) {
+    const endDateForShift = isMultiDay ? formData.endDate : undefined;
+    const shifts = countShiftsInRange(
+      formData.date,
+      formData.startTime,
+      endDateForShift,
+      formData.endTime
+    );
+    if (shifts > 0) {
+      pricingUnit = "shift";
+      effectiveUnitCount = shifts;
+    }
+  }
+
+  const serviceRatePerUnit =
+    effectiveUnitCount > 0 ? serviceCost / effectiveUnitCount : 0;
 
   const FEATURE_ICONS = [Clock, Users, CheckCircle2] as const;
 
@@ -2762,12 +2873,19 @@ export default function Book() {
                           )}
 
                           {finalAvailability && formData.startTime && formData.endTime && validationErrors.length === 0 && (
-                            <Alert className="bg-green-50 text-green-900 border-green-200">
-                              <CheckCircle2 className="h-4 w-4" />
-                              <AlertDescription>
-                                Time slot is available!
-                              </AlertDescription>
-                            </Alert>
+                            <>
+                              <Alert className="bg-green-50 text-green-900 border-green-200">
+                                <CheckCircle2 className="h-4 w-4" />
+                                <AlertDescription>
+                                  Time slot is available!
+                                </AlertDescription>
+                              </Alert>
+                              {isPerShiftPricing && (
+                                <p className="mt-2 text-xs text-muted-foreground">
+                                  Pricing for this layout is based on fixed shifts. Each day has two shifts: 12:00&nbsp;AM&nbsp;–&nbsp;12:00&nbsp;PM and 12:00&nbsp;PM&nbsp;–&nbsp;12:00&nbsp;AM. The booking price is calculated per shift, and if your booking uses even 1 hour of the next shift, the full price for that entire shift will be charged.
+                                </p>
+                              )}
+                            </>
                           )}
 
                           {availabilityLoadFailed && (
@@ -3300,7 +3418,7 @@ export default function Book() {
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-4">
-                    {formData.serviceType && duration > 0 ? (
+                    {formData.serviceType && duration > 0 && formData.layoutId ? (
                       <>
                         <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Itemized receipt</p>
 
@@ -3445,9 +3563,9 @@ export default function Book() {
                             <p className="font-heading font-bold text-2xl text-accent">
                               ${totalPrice.toFixed(2)}
                             </p>
-                            {duration > 0 && (
+                            {effectiveUnitCount > 0 && (
                               <p className="text-xs text-muted-foreground">
-                                ${(totalPrice / duration).toFixed(2)}/hour
+                                ${(totalPrice / effectiveUnitCount).toFixed(2)}/{pricingUnit}
                               </p>
                             )}
                           </div>
